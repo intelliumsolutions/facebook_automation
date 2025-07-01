@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Facebook Cross-Posting Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 font-sans">
+  <div class="container mx-auto p-6 max-w-2xl">
+    <h1 class="text-3xl font-bold text-gray-800 mb-6">Facebook Cross-Posting Dashboard</h1>
+    <div id="fb-root"></div>
+    <script async defer crossorigin="anonymous" src="https://connect.facebook.net/en_US/sdk.js"></script>
+    <form id="postForm" enctype="multipart/form-data" class="bg-white p-6 rounded-lg shadow-md">
+      <div class="mb-4">
+        <label for="postContent" class="block text-gray-700 font-semibold mb-2">Post Content</label>
+        <p class="text-sm text-gray-500 mb-2">Enter your post text, including unique hashtags or Page-specific content (e.g., "Check out our offer! #Palewet" vs. "#Jaaak") to avoid spam flags.</p>
+        <textarea id="postContent" name="content" rows="5" class="w-full p-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="Enter your post content"></textarea>
+      </div>
+      <div class="mb-4">
+        <label for="imageFile" class="block text-gray-700 font-semibold mb-2">Upload Image (optional)</label>
+        <p class="text-sm text-gray-500 mb-2">Select a PNG, JPG, or JPEG file (max 100MB).</p>
+        <input type="file" id="imageFile" name="image_file" accept="image/png,image/jpeg,image/jpg" class="w-full p-2 border rounded-md">
+      </div>
+      <div class="mb-4">
+        <label class="block text-gray-700 font-semibold mb-2">Select Pages</label>
+        <p class="text-sm text-gray-500 mb-2">Choose the Pages to post to (select at least one). Unpublished or invalid Pages are marked and cannot be selected.</p>
+        <button type="button" id="refreshPages" class="mb-4 bg-gray-500 text-white py-1 px-3 rounded-md hover:bg-gray-600 transition duration-200">Refresh Pages</button>
+        <div id="pagesList" class="space-y-2"></div>
+      </div>
+      <button type="submit" id="postButton" class="w-full bg-blue-600 text-white py-2 rounded-md hover:bg-blue-700 transition duration-200">Post to Selected Pages</button>
+      <p id="postStatus" class="text-sm text-gray-500 mt-2 hidden">Posting in progress...</p>
+    </form>
+  </div>
+
+  <script>
+    window.fbAsyncInit = function() {
+      FB.init({
+        appId: '{{ app_id }}',
+        autoLogAppEvents: true,
+        xfbml: true,
+        version: 'v20.0'
+      });
+      checkLoginStatus();
+    };
+
+    function checkLoginStatus() {
+      FB.getLoginStatus(function(response) {
+        if (response.status === 'connected') {
+          loadPages(response.authResponse.accessToken);
+        } else {
+          FB.login(function(response) {
+            if (response.authResponse) {
+              loadPages(response.authResponse.accessToken);
+            } else {
+              alert('Login failed or was canceled. Please try again.');
+            }
+          }, { scope: 'pages_show_list,pages_manage_posts,pages_read_engagement' });
+        }
+      });
+    }
+
+    function loadPages(userAccessToken) {
+      fetch('/get_pages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ access_token: userAccessToken })
+      })
+      .then(response => {
+        if (!response.ok) {
+          return response.json().then(data => {
+            throw new Error(data.error || `HTTP error! Status: ${response.status}`);
+          });
+        }
+        return response.json();
+      })
+      .then(data => {
+        if (data.error) {
+          console.error('Error fetching pages:', data.error);
+          alert(`Error fetching pages: ${data.error}`);
+          return;
+        }
+        const pagesList = document.getElementById('pagesList');
+        pagesList.innerHTML = data.pages.map(page => 
+          `<label class="flex items-center space-x-2">
+             <input type="checkbox" name="pages" value="${page.id}" data-token="${page.access_token}" data-name="${page.name}" data-valid="${page.is_valid}" class="h-4 w-4 text-blue-600" ${page.is_valid ? '' : 'disabled'}>
+             <span class="${page.is_valid ? '' : 'text-gray-500'}">${page.name}${page.is_valid ? '' : ' (Unpublished or Invalid)'}</span>
+           </label>`
+        ).join('');
+        console.log('Loaded pages:', data.pages);
+      })
+      .catch(error => {
+        console.error('Fetch error:', error);
+        alert(`Error fetching pages: ${error.message}`);
+      });
+    }
+
+    document.getElementById('refreshPages').addEventListener('click', function() {
+      FB.getLoginStatus(function(response) {
+        if (response.status === 'connected') {
+          loadPages(response.authResponse.accessToken);
+        } else {
+          alert('Please log in to refresh pages.');
+        }
+      });
+    });
+
+    document.getElementById('postForm').addEventListener('submit', function(e) {
+      e.preventDefault();
+      const selectedPages = Array.from(document.querySelectorAll('input[name="pages"]:checked'))
+        .map(input => ({
+          id: input.value,
+          access_token: input.dataset.token,
+          name: input.dataset.name,
+          is_valid: input.dataset.valid === 'true'
+        }));
+      if (selectedPages.length === 0) {
+        alert('Please select at least one valid page.');
+        return;
+      }
+      console.log('Selected pages:', selectedPages);
+      if (confirm(`Are you sure you want to post to ${selectedPages.map(p => p.name).join(', ')}?`)) {
+        const postButton = document.getElementById('postButton');
+        const postStatus = document.getElementById('postStatus');
+        postButton.disabled = true;
+        postStatus.classList.remove('hidden');
+        const formData = new FormData();
+        formData.append('content', document.getElementById('postContent').value);
+        formData.append('image_file', document.getElementById('imageFile').files[0]);
+        formData.append('pages', JSON.stringify(selectedPages));
+        fetch('/post_to_pages', {
+          method: 'POST',
+          body: formData
+        })
+        .then(response => {
+          if (!response.ok) {
+            return response.json().then(data => {
+              throw new Error(data.error || `HTTP error! Status: ${response.status}`);
+            });
+          }
+          return response.json();
+        })
+        .then(data => {
+          if (data.error) {
+            alert(`Error: ${data.error}`);
+          } else {
+            alert(data.message || 'Posting completed. Check logs for details.');
+          }
+        })
+        .catch(error => {
+          console.error('Posting error:', error);
+          alert(`Error posting: ${error.message}`);
+        })
+        .finally(() => {
+          postButton.disabled = false;
+          postStatus.classList.add('hidden');
+        });
+      }
+    });
+  </script>
+</body>
+</html>
